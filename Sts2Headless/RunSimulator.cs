@@ -911,6 +911,7 @@ public class RunSimulator
                     ["upgraded"] = card.IsUpgraded,
                     ["stats"] = stats.Count > 0 ? stats : null,
                     ["description"] = _loc.Bilingual("cards", card.Id.Entry + ".description"),
+                    ["after_upgrade"] = GetUpgradedInfo(card),
                 };
             }).ToList();
 
@@ -1277,6 +1278,7 @@ public class RunSimulator
                 ["rarity"] = c.Rarity.ToString(),
                 ["description"] = _loc.Bilingual("cards", c.Id.Entry + ".description"),
                 ["stats"] = stats.Count > 0 ? stats : null,
+                ["after_upgrade"] = GetUpgradedInfo(c),
             };
         }).ToList();
 
@@ -1517,6 +1519,35 @@ public class RunSimulator
             if (CombatManager.Instance.IsPlayPhase || !CombatManager.Instance.IsInProgress) return;
             Thread.Sleep(5);
         }
+    }
+
+    /// <summary>Compute what a card would look like after upgrading (stats + cost + description).</summary>
+    private Dictionary<string, object?>? GetUpgradedInfo(CardModel card)
+    {
+        if (!card.IsUpgradable) return null;
+        try
+        {
+            var clone = ModelDb.GetById<CardModel>(card.Id).ToMutable();
+            // Apply existing upgrades first
+            for (int i = 0; i < card.CurrentUpgradeLevel; i++)
+            {
+                clone.UpgradeInternal();
+                clone.FinalizeUpgradeInternal();
+            }
+            // Apply one more upgrade
+            clone.UpgradeInternal();
+            clone.FinalizeUpgradeInternal();
+
+            var stats = new Dictionary<string, object?>();
+            try { foreach (var dv in clone.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
+            return new Dictionary<string, object?>
+            {
+                ["cost"] = clone.EnergyCost?.GetResolved() ?? 0,
+                ["stats"] = stats.Count > 0 ? stats : null,
+                ["description"] = _loc.Bilingual("cards", card.Id.Entry + ".description"),
+            };
+        }
+        catch { return null; }
     }
 
     private Dictionary<string, object?> PlayerSummary(Player player)

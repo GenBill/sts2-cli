@@ -223,6 +223,29 @@ def show_card_reward(state):
         print(f"  [{card['index']}] {c(n(card['name']), type_color)} ({cost}) {c(rarity, rarity_color)} {stat_str}")
         if card_desc:
             print(f"      {c(card_desc, 'dim')}")
+        # Show upgrade preview
+        aug = card.get("after_upgrade")
+        if aug:
+            aug_stats = aug.get("stats") or {}
+            aug_parts = []
+            aug_cost = aug.get("cost")
+            if aug_cost is not None and aug_cost != cost:
+                aug_parts.append(c(f"cost {cost}→{aug_cost}", "green"))
+            for k in ["damage", "block"]:
+                if k in aug_stats:
+                    old = stats.get(k, 0)
+                    new_val = aug_stats[k]
+                    if new_val != old:
+                        label = "dmg" if k == "damage" else "blk"
+                        clr = "red" if k == "damage" else "blue"
+                        aug_parts.append(c(f"{label} {old}→{new_val}", clr))
+            for k, v in aug_stats.items():
+                if k not in ("damage", "block"):
+                    old = stats.get(k, 0)
+                    if v != old:
+                        aug_parts.append(f"{k} {old}→{v}")
+            if aug_parts:
+                print(f"      {c('upgrade:', 'green')} {', '.join(aug_parts)}")
 
 def show_shop(state):
     print(f"\n{'─' * 60}")
@@ -631,7 +654,8 @@ def play(character="Ironclad", seed=None, auto=False):
                 print()
                 bundles = state.get("bundles", [])
                 for b in bundles:
-                    print(f"  {c(f'Pack [{b[\"index\"]}]:', 'yellow')}")
+                    bidx = b["index"]
+                    print(f"  {c(f'Pack [{bidx}]:', 'yellow')}")
                     for cd in b.get("cards", []):
                         card_desc = desc(cd.get("description", {}))
                         print(f"    {n(cd['name'])} ({cd.get('cost','?')}) {c(cd.get('type',''), 'dim')}")
@@ -658,7 +682,7 @@ def play(character="Ironclad", seed=None, auto=False):
                 print()
                 cards = state.get("cards", [])
                 for cd in cards:
-                    up = c("⬆", "green") if cd.get("upgraded") else ""
+                    up = c("+", "green") if cd.get("upgraded") else ""
                     stats = cd.get("stats") or {}
                     stat_parts = []
                     if "damage" in stats: stat_parts.append(c(f"{stats['damage']}dmg", "red"))
@@ -670,6 +694,30 @@ def play(character="Ironclad", seed=None, auto=False):
                     print(f"  [{cd['index']}] {n(cd['name'])}{up} ({cd.get('cost','?')}) {c(cd.get('type',''), 'dim')} {stat_str}")
                     if card_desc:
                         print(f"      {c(card_desc, 'dim')}")
+                    # Show upgrade preview
+                    aug = cd.get("after_upgrade")
+                    if aug:
+                        aug_stats = aug.get("stats") or {}
+                        aug_parts = []
+                        aug_cost = aug.get("cost")
+                        cost_changed = aug_cost is not None and aug_cost != cd.get("cost")
+                        if cost_changed:
+                            aug_parts.append(c(f"cost {cd.get('cost')}→{aug_cost}", "green"))
+                        for k in ["damage", "block"]:
+                            if k in aug_stats:
+                                old = stats.get(k, 0)
+                                new_val = aug_stats[k]
+                                if new_val != old:
+                                    label = "dmg" if k == "damage" else "blk"
+                                    clr = "red" if k == "damage" else "blue"
+                                    aug_parts.append(c(f"{label} {old}→{new_val}", clr))
+                        for k, v in aug_stats.items():
+                            if k not in ("damage", "block"):
+                                old = stats.get(k, 0)
+                                if v != old:
+                                    aug_parts.append(f"{k} {old}→{v}")
+                        if aug_parts:
+                            print(f"      {c('upgrade:', 'green')} {', '.join(aug_parts)}")
 
                 valid = {str(cd["index"]): cd for cd in cards}
                 if min_sel == 0:
