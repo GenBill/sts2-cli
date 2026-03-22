@@ -2302,6 +2302,10 @@ public class RunSimulator
             }
             catch (Exception ex) { Console.Error.WriteLine($"[WARN] Bundle patch: {ex.Message}"); }
 
+            // NOTE: Neutralize.OnPlay has a NullRef in headless mode (VFX chain).
+            // Cannot patch AttackCommand.Execute (async method — Harmony breaks it).
+            // Neutralize will silently fail to deal damage. TODO: find exact NullRef source.
+
             // Patch HasEntry to always return true
             PatchMethod(harmony, typeof(LocTable), "HasEntry", nameof(LocPatches.HasEntryPrefix));
 
@@ -2366,6 +2370,7 @@ public class RunSimulator
             __result = __instance?.LocEntryKey ?? "";
             return false;
         }
+
 
         public static bool HasEntryPrefix(ref bool __result)
         {

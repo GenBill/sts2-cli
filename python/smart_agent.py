@@ -101,7 +101,7 @@ def play_game(seed, verbose=True):
                 victory = state.get("victory", False)
                 act = state.get("act", "?")
                 floor = state.get("floor", "?")
-                relics = [nm(r) for r in p.get("relics", [])]
+                relics = [nm(r.get("name", r)) for r in p.get("relics", [])]
                 if verbose:
                     status = "🏆 VICTORY!" if victory else "💀 DEFEAT"
                     print(f"\n{status} Act {act} Floor {floor} | HP {hp}/{mhp} | Gold {gold} | Deck {deck_size}")
