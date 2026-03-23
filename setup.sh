@@ -194,19 +194,24 @@ foreach (var type in module.Types)
 }
 
 Console.WriteLine($"Applied {patches} patches");
-module.Write(dllPath);
+var outPath = dllPath + ".patched";
+module.Write(outPath);
+module.Dispose();
+File.Delete(dllPath);
+File.Move(outPath, dllPath);
 Console.WriteLine("Done!");
 CSHARP
 
+REPO_DIR="$(pwd)"
 cd "$PATCH_DIR"
-$DOTNET run -- "$(cd - > /dev/null && pwd)/lib/sts2.dll" 2>&1
+$DOTNET run -- "$REPO_DIR/lib/sts2.dll" 2>&1
+cd "$REPO_DIR"
 rm -rf "$PATCH_DIR"
 
 # ── Build ──
 
 echo ""
 echo "🏗️ Building..."
-cd "$(dirname "$0")"
 $DOTNET build Sts2Headless/Sts2Headless.csproj 2>&1 | tail -5
 
 echo ""
