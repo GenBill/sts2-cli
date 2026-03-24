@@ -838,9 +838,8 @@ def _render_map(map_data, choice_set=None, choice_indices=None):
                 buf[center + 1] = "]"
                 color_subs.append((center - 1, center + 2, c(f"[{icon}]", "green")))
             elif choice_idx is not None:
-                label = str(choice_idx)
-                buf[center] = label
-                color_subs.append((center, center + 1, c(label, "yellow")))
+                buf[center] = icon
+                color_subs.append((center, center + 1, c(icon, "yellow")))
             elif visited:
                 buf[center] = icon
                 color_subs.append((center, center + 1, c(icon, "dim")))
@@ -852,6 +851,23 @@ def _render_map(map_data, choice_set=None, choice_indices=None):
         for start, end, colored in sorted(color_subs, key=lambda x: -x[0]):
             line = line[:start] + colored + line[end:]
         print(f"  {rn:>2}| {line}")
+
+        # --- Choice index annotation line ---
+        row_choices = {col: choice_indices[(col, rn)] for col in range(total_cols) if (col, rn) in choice_indices}
+        if row_choices:
+            ann = list(" " * (W * total_cols))
+            ann_subs = []
+            for col, idx in row_choices.items():
+                label = f"[{idx}]"
+                start = col * W + W // 2 - 1
+                for j, ch in enumerate(label):
+                    if 0 <= start + j < len(ann):
+                        ann[start + j] = ch
+                ann_subs.append((start, start + len(label), c(label, "yellow")))
+            ann_line = "".join(ann)
+            for start, end, colored in sorted(ann_subs, key=lambda x: -x[0]):
+                ann_line = ann_line[:start] + colored + ann_line[end:]
+            print(f"    | {ann_line}")
 
         # --- Connection line below this row (edges from row below going up to this row) ---
         if idx > 0:
