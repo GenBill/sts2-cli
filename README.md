@@ -70,6 +70,16 @@ dotnet run --project src/Sts2Headless/Sts2Headless.csproj
 
 Each command returns a JSON decision point (`map_select` / `combat_play` / `card_reward` / `rest_site` / `event_choice` / `shop` / `game_over`). All names are in English.
 
+## Game Logs
+
+Every run is automatically logged to `logs/` as a JSONL file (one JSON per line), recording each game state and action with timestamps. Logs older than 7 days are cleaned up automatically.
+
+```bash
+python3 python/play.py --no-log    # disable logging
+```
+
+**When filing a bug report, please attach the relevant log file from `logs/`** — it contains the full step-by-step game state needed to reproduce the issue.
+
 ## Supported Characters
 
 | Character | Status |
@@ -175,6 +185,16 @@ dotnet run --project src/Sts2Headless/Sts2Headless.csproj
 ```
 
 每个命令返回一个 JSON decision point（`map_select` / `combat_play` / `card_reward` / `rest_site` / `event_choice` / `shop` / `game_over`），所有名称为英文。
+
+## 游戏日志
+
+每局游戏会自动记录到 `logs/` 目录下的 JSONL 文件中，包含每一步的游戏状态和操作，附带时间戳。超过 7 天的旧日志会自动清理。
+
+```bash
+python3 python/play.py --no-log    # 关闭日志
+```
+
+**提交 bug 报告时，请附上 `logs/` 中对应的日志文件** — 它包含了复现问题所需的完整游戏步骤。
 
 ## 架构
 

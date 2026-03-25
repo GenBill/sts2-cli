@@ -15,6 +15,7 @@ import sys
 import os
 import argparse
 import random
+from game_log import GameLogger
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT = os.path.join(ROOT, "src", "Sts2Headless", "Sts2Headless.csproj")
@@ -1029,7 +1030,9 @@ def get_input(prompt, valid_options=None, state=None):
 
 # ─── Main game loop ───
 
-def play(character="Ironclad", seed=None, auto=False, ascension=0):
+def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True):
+    actual_seed = seed or f"cli_{random.randint(1000,9999)}"
+    logger = GameLogger(character, actual_seed, enabled=log)
     proc = subprocess.Popen(
         [DOTNET, "run", "--no-build", "--project", PROJECT],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -1042,9 +1045,12 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0):
             if not l:
                 return None
             if l.startswith("{"):
-                return json.loads(l)
+                resp = json.loads(l)
+                logger.log_state(resp)
+                return resp
 
     def send(cmd):
+        logger.log_action(cmd)
         proc.stdin.write(json.dumps(cmd) + "\n")
         proc.stdin.flush()
         return read()
@@ -1060,12 +1066,12 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0):
 
         print(f"\n{c('Slay the Spire 2 — Headless CLI', 'bold')}")
         asc_str = f"  {t('Ascension','渐进难度')}: {ascension}" if ascension > 0 else ""
-        print(f"{t('Character','角色')}: {character}  {t('Seed','种子')}: {seed or t('random','随机')}{asc_str}")
+        print(f"{t('Character','角色')}: {character}  {t('Seed','种子')}: {actual_seed}{asc_str}")
         print(f"{t('Type','输入')} {c('help', 'cyan')} {t('for available commands.','查看可用命令。')}\n")
 
         # Map display lang to game engine lang: "both" → "zh" (show Chinese names), "en" → "en"
         game_lang = "en" if LANG == "en" else "zh"
-        state = send({"cmd": "start_run", "character": character, "seed": seed or f"cli_{random.randint(1000,9999)}", "ascension": ascension, "lang": game_lang})
+        state = send({"cmd": "start_run", "character": character, "seed": actual_seed, "ascension": ascension, "lang": game_lang})
 
         while True:
             if not state:
@@ -1391,6 +1397,9 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0):
                 state = send({"cmd": "action", "action": "proceed"})
 
     finally:
+        logger.close()
+        if logger.path:
+            print(f"\n  [log] {t('Game log saved to','游戏日志已保存至')} {logger.path}")
         try:
             proc.stdin.write(json.dumps({"cmd": "quit"}) + "\n")
             proc.stdin.flush()
@@ -1416,9 +1425,11 @@ if __name__ == "__main__":
     parser.add_argument("--lang", type=str, default="zh",
                        choices=["en", "zh"],
                        help="Display language: en or zh (default: zh)")
+    parser.add_argument("--no-log", action="store_true",
+                       help="Disable game logging")
     args = parser.parse_args()
 
     LANG = args.lang
 
     ensure_setup()
-    play(character=args.character, seed=args.seed, auto=args.auto, ascension=args.ascension)
+    play(character=args.character, seed=args.seed, auto=args.auto, ascension=args.ascension, log=not args.no_log)

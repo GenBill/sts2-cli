@@ -8,14 +8,16 @@ import subprocess
 import sys
 import random
 import os
+from game_log import GameLogger
 
 DOTNET = os.path.expanduser("~/.dotnet-arm64/dotnet")
 PROJECT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "src", "Sts2Headless", "Sts2Headless.csproj")
 
 
-def play_run(seed: str, character: str = "Ironclad", verbose: bool = True):
+def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: bool = True):
     """Play a complete run and return the result."""
+    logger = GameLogger(character, seed, enabled=log)
     proc = subprocess.Popen(
         [DOTNET, "run", "--no-build", "--project", PROJECT],
         stdin=subprocess.PIPE,
@@ -41,9 +43,11 @@ def play_run(seed: str, character: str = "Ironclad", verbose: bool = True):
         line = json.dumps(cmd)
         if verbose:
             print(f"  > {line[:200]}")
+        logger.log_action(cmd)
         proc.stdin.write(line + "\n")
         proc.stdin.flush()
         resp = read_json_line()
+        logger.log_state(resp)
         if verbose:
             rtype = resp.get("type", "?")
             decision = resp.get("decision", "")
@@ -243,6 +247,9 @@ def play_run(seed: str, character: str = "Ironclad", verbose: bool = True):
         return {"victory": False, "seed": seed, "steps": step, "error": str(e)}
 
     finally:
+        logger.close()
+        if logger.path:
+            print(f"  [log] Saved to {logger.path}")
         try:
             proc.stdin.write(json.dumps({"cmd": "quit"}) + "\n")
             proc.stdin.flush()
