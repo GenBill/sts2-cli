@@ -33,6 +33,31 @@ python3 python/play.py --ascension 10         # Ascension 10
 python3 python/play.py --character Silent      # play as Silent
 ```
 
+## Telegram remote bot (WIP)
+
+A minimal text-first Telegram adapter is included for remote play experiments:
+
+```bash
+pip install -r requirements-telegram.txt
+export STS2_TELEGRAM_BOT_TOKEN="<your-bot-token>"
+python3 python/telegram_bot.py
+```
+
+Current commands:
+
+```text
+/start_run [character] [ascension]
+/state
+/map
+/play <card_index> [target_index]
+/end
+/choose <index>
+/skip
+/quit_run
+```
+
+This layer talks to the same headless engine over the existing stdin/stdout JSON protocol.
+
 Type `help` in-game:
 
 ```
