@@ -35,7 +35,7 @@ python3 python/play.py --character Silent      # play as Silent
 
 ## Telegram remote bot (WIP)
 
-A minimal text-first Telegram adapter is included for remote play experiments:
+A minimal Telegram adapter is included for remote play experiments. It supports both text commands and inline buttons.
 
 ```bash
 pip install -r requirements-telegram.txt
@@ -55,6 +55,10 @@ Current commands:
 /skip
 /quit_run
 ```
+
+See deployment notes:
+
+- `docs/telegram-remote-deploy.md`
 
 This layer talks to the same headless engine over the existing stdin/stdout JSON protocol.
 
