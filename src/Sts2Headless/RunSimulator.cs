@@ -187,6 +187,7 @@ internal class LocLookup
 /// </summary>
 public class RunSimulator
 {
+    private const int CurrentSaveSchemaVersion = 14;
     private RunState? _runState;
     private static bool _modelDbInitialized;
     private static readonly InlineSynchronizationContext _syncCtx = new();
@@ -461,7 +462,273 @@ public class RunSimulator
     }
 
     // ─── Game actions ───
+    public Dictionary<string, object?> LoadSave(string saveJson)
+    {
+        try
+        {
+            EnsureModelDbInitialized();
 
+            Log("Loading save file...");
+
+            if (!ValidateSaveSchemaVersion(saveJson, out var schemaError))
+                return Error($"Save schema mismatch: {schemaError}");
+
+            var readResult = SaveManager.FromJson<SerializableRun>(saveJson);
+            if (!readResult.Success || readResult.SaveData == null)
+                return Error($"Failed to parse save file: {readResult.Status} {readResult.ErrorMessage}");
+
+            var save = readResult.SaveData;
+            Log($"Save loaded: seed={save.SerializableRng?.Seed}, act={save.CurrentActIndex}, ascension={save.Ascension}");
+
+            _runState = RunState.FromSerializable(save);
+            if (_runState == null)
+                return Error("Failed to create RunState from save");
+
+            Log($"RunState created, players={_runState.Players?.Count}");
+
+            var netService = new NetSingleplayerGameService();
+            RunManager.Instance.SetUpSavedSinglePlayer(_runState, save);
+            LocalContext.NetId = netService.NetId;
+
+            CombatManager.Instance.TurnStarted += _ => _turnStarted.Set();
+            CombatManager.Instance.CombatEnded += _ => _combatEnded.Set();
+            CardSelectCmd.UseSelector(_cardSelector);
+            LocPatches._bundleSimRef = this;
+
+            var savedRoom = _runState.CurrentRoom;
+
+            // Save visited coords before Launch (EnterAct will clear them)
+            var savedVisitedCoords = _runState.VisitedMapCoords?.ToList() ?? new List<MapCoord>();
+            var shouldResumeInitialNeow = IsInitialNeowSave(saveJson);
+            Log($"Save has {savedVisitedCoords.Count} visited coords");
+
+            RunManager.Instance.Launch();
+            Log("Run launched");
+
+            if (savedRoom is MapRoom || savedRoom == null)
+            {
+                // Preserve Neow for saves created before the first blessing choice.
+                // Once the run has visited at least one map node, re-entering Act 1
+                // should not send the player back through the Ancient start node.
+                if (_runState.CurrentActIndex == 0 && savedVisitedCoords.Count > 0)
+                    _runState.ExtraFields.StartedWithNeow = false;
+                RunManager.Instance.EnterAct(_runState.CurrentActIndex, doTransition: false).GetAwaiter().GetResult();
+                _syncCtx.Pump();
+                Log($"Entered Act {_runState.CurrentActIndex}");
+
+                if (shouldResumeInitialNeow && _runState.Map?.StartingMapPoint != null)
+                {
+                    Log("Restoring initial Neow event");
+                    RunManager.Instance.EnterMapCoord(_runState.Map.StartingMapPoint.coord).GetAwaiter().GetResult();
+                    _syncCtx.Pump();
+                }
+
+                // EnterAct clears visited coords and ActFloor — restore them from save
+                if (savedVisitedCoords.Count > 0)
+                {
+                    if (_runState.VisitedMapCoords == null || _runState.VisitedMapCoords.Count == 0)
+                    {
+                        foreach (var coord in savedVisitedCoords)
+                            _runState.AddVisitedMapCoord(coord);
+                    }
+                    _runState.ActFloor = savedVisitedCoords.Count;
+                    var last = savedVisitedCoords[^1];
+                    Log($"Restored map position: floor={_runState.ActFloor}, coord=({last.col},{last.row})");
+                }
+            }
+            else
+            {
+                Log($"Preserving saved room: {savedRoom.GetType().Name}");
+            }
+
+            return DetectDecisionPoint();
+        }
+        catch (Exception ex)
+        {
+            return ErrorWithTrace("LoadSave failed", ex);
+        }
+    }
+
+    private static bool ValidateSaveSchemaVersion(string saveJson, out string error)
+    {
+        error = "";
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(saveJson);
+            var root = doc.RootElement;
+
+            if (!root.TryGetProperty("schema_version", out var versionElem))
+            {
+                error = "missing schema_version";
+                return false;
+            }
+
+            if (versionElem.ValueKind != System.Text.Json.JsonValueKind.Number ||
+                !versionElem.TryGetInt32(out var schemaVersion))
+            {
+                error = "schema_version is not a valid integer";
+                return false;
+            }
+
+            if (schemaVersion != CurrentSaveSchemaVersion)
+            {
+                error = $"expected v{CurrentSaveSchemaVersion}, got v{schemaVersion}";
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = $"could not inspect save: {ex.Message}";
+            return false;
+        }
+    }
+
+    private static bool TrySetPropertyValue(object target, string propertyName, object? value)
+    {
+        var prop = target.GetType().GetProperty(propertyName);
+        if (prop?.CanWrite != true)
+            return false;
+        prop.SetValue(target, value);
+        return true;
+    }
+
+    private static bool IsInitialNeowSave(string saveJson)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(saveJson);
+            var root = doc.RootElement;
+
+            if (!root.TryGetProperty("current_act_index", out var actIndexElem) || actIndexElem.GetInt32() != 0)
+                return false;
+
+            var hasVisitedCoords = root.TryGetProperty("visited_map_coords", out var visitedElem)
+                                && visitedElem.ValueKind == System.Text.Json.JsonValueKind.Array
+                                && visitedElem.GetArrayLength() > 0;
+            if (hasVisitedCoords)
+                return false;
+
+            return root.TryGetProperty("extra_fields", out var extraFieldsElem)
+                && extraFieldsElem.ValueKind == System.Text.Json.JsonValueKind.Object
+                && extraFieldsElem.TryGetProperty("started_with_neow", out var startedElem)
+                && startedElem.ValueKind == System.Text.Json.JsonValueKind.True;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryRollbackSerializedSaveToPreRoom(SerializableRun serializableRun, out string error)
+    {
+        error = "";
+
+        var saveType = serializableRun.GetType();
+        var visitedProp = saveType.GetProperty("VisitedMapCoords");
+        if (visitedProp == null)
+        {
+            error = "Save data is missing VisitedMapCoords";
+            return false;
+        }
+
+        var visitedValue = visitedProp.GetValue(serializableRun);
+        var visitedItems = new List<object?>();
+        if (visitedValue is System.Collections.IEnumerable visitedEnumerable)
+        {
+            foreach (var item in visitedEnumerable)
+                visitedItems.Add(item);
+        }
+
+        if (visitedItems.Count == 0)
+        {
+            error = "Cannot roll back save before the first room";
+            return false;
+        }
+
+        visitedItems.RemoveAt(visitedItems.Count - 1);
+
+        var visitedType = visitedProp.PropertyType;
+        if (visitedType.IsArray)
+        {
+            var elementType = visitedType.GetElementType()!;
+            var array = Array.CreateInstance(elementType, visitedItems.Count);
+            for (int i = 0; i < visitedItems.Count; i++)
+                array.SetValue(visitedItems[i], i);
+            visitedProp.SetValue(serializableRun, array);
+        }
+        else if (visitedType.IsGenericType)
+        {
+            var elementType = visitedType.GetGenericArguments()[0];
+            var listType = typeof(List<>).MakeGenericType(elementType);
+            var list = (System.Collections.IList)Activator.CreateInstance(listType)!;
+            foreach (var item in visitedItems)
+                list.Add(item);
+            visitedProp.SetValue(serializableRun, list);
+        }
+        else
+        {
+            error = $"Unsupported VisitedMapCoords type: {visitedType.Name}";
+            return false;
+        }
+
+        TrySetPropertyValue(serializableRun, "ActFloor", visitedItems.Count);
+        TrySetPropertyValue(serializableRun, "CurrentMapCoord", visitedItems.Count > 0 ? visitedItems[^1] : null);
+        TrySetPropertyValue(serializableRun, "PreFinishedRoom", null);
+        TrySetPropertyValue(serializableRun, "CurrentRoom", null);
+        return true;
+    }
+
+    public Dictionary<string, object?> SaveCheckpoint(string? outputPath)
+    {
+        try
+        {
+            if (_runState == null)
+                return Error("No active run to save");
+
+            if (string.IsNullOrEmpty(outputPath))
+                return Error("No output path specified for quit save");
+
+            var currentRoom = _runState.CurrentRoom;
+            SerializableRun serializableRun;
+
+            if (currentRoom is MapRoom || currentRoom == null)
+            {
+                Log($"Saving map checkpoint (room={currentRoom?.GetType().Name ?? "null"}, outputPath={outputPath})...");
+                serializableRun = RunManager.Instance.ToSave(currentRoom);
+            }
+            else
+            {
+                Log($"Saving pre-room checkpoint from {currentRoom.GetType().Name} (outputPath={outputPath})...");
+                serializableRun = RunManager.Instance.ToSave(new MapRoom());
+                if (!TryRollbackSerializedSaveToPreRoom(serializableRun, out var rollbackError))
+                    return Error($"Cannot save checkpoint: {rollbackError}");
+            }
+
+            var saveJson = SaveManager.ToJson(serializableRun);
+            Log($"Serialized save: {saveJson.Length} chars");
+
+            var dir = System.IO.Path.GetDirectoryName(outputPath);
+            if (!string.IsNullOrEmpty(dir) && !System.IO.Directory.Exists(dir))
+                System.IO.Directory.CreateDirectory(dir);
+            System.IO.File.WriteAllText(outputPath, saveJson);
+            Log($"Save written to: {outputPath}");
+
+            return new Dictionary<string, object?>
+            {
+                ["type"] = "save_result",
+                ["success"] = true,
+                ["path"] = outputPath,
+                ["size"] = saveJson.Length,
+                ["room_type"] = currentRoom?.GetType().Name,
+            };
+        }
+        catch (Exception ex)
+        {
+            return ErrorWithTrace("SaveCheckpoint failed", ex);
+        }
+    }
     public Dictionary<string, object?> ExecuteAction(string action, Dictionary<string, object?>? args)
     {
         try
@@ -1392,7 +1659,7 @@ public class RunSimulator
             return CardRewardState(player, _runState.CurrentRoom as CombatRoom);
         }
 
-        // Check if RunManager reports game over
+        // Check if RunManager reports game over (victory)
         if (RunManager.Instance.IsGameOver)
         {
             return GameOverState(true);

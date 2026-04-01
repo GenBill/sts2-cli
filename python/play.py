@@ -20,6 +20,8 @@ from game_log import GameLogger
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT = os.path.join(ROOT, "src", "Sts2Headless", "Sts2Headless.csproj")
 LIB_DIR = os.path.join(ROOT, "lib")
+SAVE_DIR = os.path.join(ROOT, "saves")
+CURRENT_SAVE_SCHEMA_VERSION = 14
 
 def _find_dotnet():
     """Find .NET SDK binary."""
@@ -156,6 +158,129 @@ def ensure_setup():
 
 # Language setting (set by --lang flag)
 LANG = "zh"  # "en", "zh", or "both"
+
+# ─── Native save file support ───
+
+def _find_native_save_dir():
+    """Auto-detect the game's save directory."""
+    import platform, glob as globmod
+    system = platform.system()
+    patterns = []
+    if system == "Darwin":
+        patterns = [
+            os.path.expanduser("~/Library/Application Support/SlayTheSpire2/steam/*/profile*/saves"),
+        ]
+    elif system == "Linux":
+        patterns = [
+            os.path.expanduser("~/.local/share/SlayTheSpire2/steam/*/profile*/saves"),
+            os.path.expanduser("~/.config/unity3d/MegaCrit/Slay the Spire 2/steam/*/profile*/saves"),
+        ]
+    elif system == "Windows":
+        appdata = os.environ.get("APPDATA", "")
+        localappdata = os.environ.get("LOCALAPPDATA", "")
+        patterns = [
+            os.path.join(appdata, "SlayTheSpire2", "steam", "*", "profile*", "saves"),
+            os.path.join(localappdata, "SlayTheSpire2", "steam", "*", "profile*", "saves"),
+        ]
+    for pat in patterns:
+        matches = globmod.glob(pat)
+        for d in matches:
+            if os.path.isfile(os.path.join(d, "current_run.save")):
+                return d
+        if matches:
+            return matches[0]
+    return None
+
+def _id_to_name(model_id):
+    """Convert model ID like 'CARD.STRIKE_NECROBINDER' to readable name."""
+    if not model_id:
+        return "?"
+    parts = model_id.split(".", 1)
+    name = parts[-1] if len(parts) > 1 else model_id
+    return name.replace("_", " ").title()
+
+def show_native_save(save_path):
+    """Parse and display a native current_run.save file."""
+    with open(save_path) as f:
+        data = json.load(f)
+
+    print(f"\n{'═' * 60}")
+    print(f"  {t('Native Save File', '游戏原生存档')}")
+    print(f"  {save_path}")
+    print(f"{'═' * 60}")
+    seed = data.get("rng", {}).get("seed", "?")
+    ascension = data.get("ascension", 0)
+    act_idx = data.get("current_act_index", 0)
+    acts = data.get("acts", [])
+    act_name = _id_to_name(acts[act_idx]["id"]) if act_idx < len(acts) else "?"
+    run_time = data.get("run_time", 0)
+    run_min = run_time // 60
+    run_sec = run_time % 60
+
+    print(f"\n  {t('Seed','种子')}: {seed}")
+    print(f"  {t('Ascension','攀升')}: {ascension}")
+    print(f"  {t('Act','幕')}: {act_idx + 1} ({act_name})")
+    print(f"  {t('Time','时间')}: {run_min}m{run_sec:02d}s")
+    print(f"  Schema: v{data.get('schema_version','?')}")
+    room = data.get("pre_finished_room", {})
+    if room:
+        room_type = room.get("room_type", "?")
+        enc = room.get("encounter_id") or room.get("event_id") or ""
+        print(f"  {t('Room','当前房间')}: {room_type}" + (f" ({_id_to_name(enc)})" if enc else ""))
+
+    visited = data.get("visited_map_coords", [])
+    if visited:
+        print(f"  {t('Map','地图')}: {t('Floor','层')} {len(visited)} ({len(visited)} {t('nodes visited','个节点已访问')})")
+
+    for player in data.get("players", []):
+        char_name = _id_to_name(player.get("character_id", "?"))
+        hp = player.get("current_hp", 0)
+        max_hp = player.get("max_hp", 0)
+        gold = player.get("gold", 0)
+        energy = player.get("max_energy", 3)
+
+        print(f"\n  {'─' * 50}")
+        print(f"  {char_name}  HP: {hp}/{max_hp}  {t('Gold','金币')}: {gold}  {t('Energy','能量')}: {energy}")
+
+        deck = player.get("deck", [])
+        print(f"\n  {t('Deck','牌组')} ({len(deck)}):")
+        card_counts = {}
+        for card in deck:
+            cid = _id_to_name(card.get("id", "?"))
+            up = card.get("current_upgrade_level", 0)
+            key = f"{cid}{'+'*up if up else ''}"
+            card_counts[key] = card_counts.get(key, 0) + 1
+        for name, cnt in sorted(card_counts.items()):
+            print(f"    • {name}" + (f" x{cnt}" if cnt > 1 else ""))
+
+        relics = player.get("relics", [])
+        if relics:
+            print(f"\n  {t('Relics','遗物')} ({len(relics)}):")
+            for r in relics:
+                print(f"    🔶 {_id_to_name(r.get('id', '?'))}")
+
+        potions = player.get("potions", [])
+        if potions:
+            print(f"\n  {t('Potions','药水')} ({len(potions)}):")
+            for p in potions:
+                print(f"    🧪 [{p.get('slot_index', '?')}] {_id_to_name(p.get('id', '?'))}")
+
+    if acts:
+        print(f"\n  {'─' * 50}")
+        print(f"  {t('Acts summary','幕章概览')}:")
+        for i, act in enumerate(acts):
+            act_id = _id_to_name(act.get("id", "?"))
+            rooms_data = act.get("rooms", {})
+            boss = _id_to_name(rooms_data.get("boss_id", ""))
+            normals = rooms_data.get("normal_encounters_visited", 0)
+            elites = rooms_data.get("elite_encounters_visited", 0)
+            events = rooms_data.get("events_visited", 0)
+            bosses = rooms_data.get("boss_encounters_visited", 0)
+            marker = " ◀" if i == act_idx else ""
+            print(f"    {t('Act','幕')} {i+1}: {act_id}  Boss: {boss}  "
+                  f"[{t('M','怪')}{normals} {t('E','英')}{elites} {t('?','事')}{events} B{bosses}]{marker}")
+
+    print(f"\n{'═' * 60}\n")
 
 # ─── Display helpers ───
 
@@ -688,7 +813,8 @@ def _load_loc():
                                     _load_loc._cache[key] = v
                                 elif lang == 'localization_zhs':
                                     _load_loc._cache[key + ':zh'] = v
-                        except: pass
+                        except Exception:
+                            pass
     return _load_loc._cache
 
 def loc_resolve(key):
@@ -944,8 +1070,7 @@ def get_input(prompt, valid_options=None, state=None):
         try:
             raw = input(f"\n{c('>', 'green')} {prompt}: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            print(f"\n{t('Quitting...','退出...')}")
-            sys.exit(0)
+            raise _QuitRequested()
 
         if not raw:
             continue
@@ -961,6 +1086,8 @@ def get_input(prompt, valid_options=None, state=None):
     {c('potions', 'cyan')}  — 查看药水
     {c('relics', 'cyan')}   — 查看遗物
     {c('quit', 'cyan')}     — 退出
+    {c('save', 'cyan')}     — 存档
+    {c('saves', 'cyan')}    — 查看存档列表
 
   {c('操作:', 'bold')}
     地图:    输入路径编号 (0, 1, 2)
@@ -979,6 +1106,9 @@ def get_input(prompt, valid_options=None, state=None):
     {c('potions', 'cyan')}  — show potions
     {c('relics', 'cyan')}   — show relics
     {c('quit', 'cyan')}     — quit
+    {c('abandon', 'cyan')}  — abandon run (forfeit)
+    {c('save', 'cyan')}     — save game
+    {c('saves', 'cyan')}    — list saves
 
   {c('Actions:', 'bold')}
     Map:     path number (0, 1, 2)
@@ -1019,9 +1149,29 @@ def get_input(prompt, valid_options=None, state=None):
                 ctx = state.get("context", {})
                 print(f"  {c(n(ctx.get('act_name','?')), 'bold')} Floor {ctx.get('floor','?')}")
             continue
+        if raw == "save":
+            if hasattr(get_input, '_save_fn'):
+                get_input._save_fn()
+            else:
+                print(f"  {t('Save not available.','存档不可用。')}")
+            continue
+        if raw == "saves":
+            saves = _list_saves()
+            if saves:
+                print(f"\n  {c(t('Saved games:','存档列表:'), 'bold')}")
+                for s in saves:
+                    print(f"    {c(s['file'], 'cyan')}  {s['character']}  {t('Seed','种子')}:{s['seed']}  {t('Actions','操作数')}:{s['actions']}")
+                print(f"\n  {t('Load with:','读档命令:')} python3 play.py --load saves/{saves[0]['file']}")
+            else:
+                print(f"  {t('No saves found.','没有找到存档。')}")
+            continue
         if raw == "quit":
-            print(t("Quitting...","退出..."))
-            sys.exit(0)
+            raise _QuitRequested()
+        if raw == "abandon":
+            confirm = input(f"  {t('Abandon this run? (y/n): ','放弃本次运行？(y/n): ')}")
+            if confirm.strip().lower() in ("y", "yes", "是"):
+                raise KeyboardInterrupt("abandon")
+            continue
 
         if valid_options and raw not in valid_options:
             print(f"  {t('Invalid. Options:','无效。选项:')} {', '.join(sorted(valid_options))}")
@@ -1030,9 +1180,105 @@ def get_input(prompt, valid_options=None, state=None):
 
 # ─── Main game loop ───
 
-def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True):
+def _save_game(save_path, character, seed, action_log):
+    """Write action replay save file."""
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    data = {"character": character, "seed": seed, "actions": action_log}
+    with open(save_path, "w") as f:
+        json.dump(data, f, indent=2)
+
+def _load_game(save_path):
+    """Read action replay save file. Returns (character, seed, actions)."""
+    with open(save_path) as f:
+        data = json.load(f)
+    return data["character"], data["seed"], data["actions"]
+
+def _list_saves():
+    """List available save files."""
+    if not os.path.isdir(SAVE_DIR):
+        return []
+    saves = []
+    for f in sorted(os.listdir(SAVE_DIR)):
+        if f.endswith(".json"):
+            path = os.path.join(SAVE_DIR, f)
+            try:
+                with open(path) as fh:
+                    d = json.load(fh)
+                saves.append({
+                    "file": f, "path": path,
+                    "character": d.get("character", "?"),
+                    "seed": d.get("seed", "?"),
+                    "actions": len(d.get("actions", [])),
+                })
+            except Exception:
+                pass
+    return saves
+
+class _QuitRequested(Exception):
+    pass
+
+def _quit_with_save(native_save_path, character, seed):
+    """Return the save path to use on quit, or None to quit without saving."""
+    print()
+    try:
+        ans = input(f"  {t('Save before quitting? (y/n): ','退出前是否存档？(y/n): ')}").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        ans = "n"
+
+    if ans not in ("y", "yes", "是"):
+        print(f"  {t('Quitting without saving.','退出，未保存。')}")
+        return None
+
+    if native_save_path:
+        return native_save_path
+
+    from datetime import datetime
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    char_tag = (character or "run").lower()
+    seed_tag = seed or "random"
+    return os.path.join(SAVE_DIR, f"{char_tag}_{seed_tag}_{ts}.save")
+
+
+def _show_quit_save_result(result):
+    """Print save confirmation or failure from a quit_result response."""
+    save_result = result.get("save") if result else None
+    if save_result and save_result.get("success"):
+        sz = save_result.get("size", 0)
+        save_path = save_result.get("path")
+        print(f"  {c(t('Saved!','已存档!'), 'green')} ({sz // 1024}KB)")
+        if save_path:
+            print(f"  {t('Save path:','存档位置:')} {c(save_path, 'cyan')}")
+            print(f"  {t('Continue later:','下次继续:')} python3 play.py --continue {save_path}")
+    elif save_result:
+        print(f"  {c(t('Save failed:','存档失败:'), 'red')} {save_result.get('message', '?')}")
+
+
+def _writeback_continue_save(send_fn, native_save_path):
+    """Best-effort writeback for --continue sessions when a stable map checkpoint is reached."""
+    if not native_save_path:
+        return
+    result = send_fn({"cmd": "write_continue_save", "path": native_save_path})
+    if result and result.get("success"):
+        sz = result.get("size", 0)
+        print(f"  {c(t(f'Save written ({sz//1024}KB)', f'存档已写入 ({sz//1024}KB)'), 'dim')}")
+    elif result:
+        print(f"  {c(t('Save failed:','存档写入失败:'), 'red')} {result.get('message','?')}")
+
+
+def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True,
+         load_path=None, native_save_path=None):
     actual_seed = seed or f"cli_{random.randint(1000,9999)}"
+    replay_actions = None
+    restart_requested = False
+    quit_sent = False
+
+    if load_path:
+        character, actual_seed, replay_actions = _load_game(load_path)
+        print(f"\n{c(t('Loading save...','读取存档...'), 'yellow')} {os.path.basename(load_path)}")
+        print(f"  {t('Character','角色')}: {character}  {t('Seed','种子')}: {actual_seed}  {t('Actions','操作数')}: {len(replay_actions)}")
+
     logger = GameLogger(character, actual_seed, enabled=log)
+    action_log = []
     proc = subprocess.Popen(
         [DOTNET, "run", "--no-build", "--project", PROJECT],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -1049,8 +1295,10 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True):
                 logger.log_state(resp)
                 return resp
 
-    def send(cmd):
+    def send(cmd, record=True):
         logger.log_action(cmd)
+        if record and cmd.get("cmd") == "action":
+            action_log.append(cmd)
         proc.stdin.write(json.dumps(cmd) + "\n")
         proc.stdin.flush()
         return read()
@@ -1058,20 +1306,68 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True):
     # Wire send into get_input for map command
     get_input._send = send
 
+    def do_save():
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fname = f"{character}_{actual_seed}_{ts}.json"
+        save_path = os.path.join(SAVE_DIR, fname)
+        _save_game(save_path, character, actual_seed, action_log)
+        print(f"  {c(t('Saved!','已存档!'), 'green')} {fname} ({len(action_log)} {t('actions','步操作')})")
+        print(f"  {t('Load with:','读档命令:')} python3 play.py --load {os.path.relpath(save_path, ROOT)}")
+
+    get_input._save_fn = do_save
     try:
         ready = read()
         if not ready:
             print("Failed to start simulator")
             return
 
-        print(f"\n{c('Slay the Spire 2 — Headless CLI', 'bold')}")
-        asc_str = f"  {t('Ascension','渐进难度')}: {ascension}" if ascension > 0 else ""
-        print(f"{t('Character','角色')}: {character}  {t('Seed','种子')}: {actual_seed}{asc_str}")
-        print(f"{t('Type','输入')} {c('help', 'cyan')} {t('for available commands.','查看可用命令。')}\n")
+        if native_save_path:
+            print(f"  {t('Loading game save...','加载游戏存档...')}")
+            state = send({"cmd": "load_save", "path": native_save_path}, record=False)
+            if state and state.get("type") == "error":
+                print(f"  {c(t('Error:','错误:'), 'red')} {state.get('message', '?')}")
+                return
+            p = state.get("player", {}) if state else {}
+            char_name = p.get("name", {})
+            if isinstance(char_name, dict):
+                character = char_name.get("en", character)
+            print(f"  {c(t('Save loaded!','存档加载成功!'), 'green')}")
+        else:
+            # Map display lang to game engine lang: "both" falls back to "zh".
+            game_lang = "en" if LANG == "en" else "zh"
+            state = send({
+                "cmd": "start_run",
+                "character": character,
+                "seed": actual_seed,
+                "ascension": ascension,
+                "lang": game_lang,
+            }, record=False)
 
-        # Map display lang to game engine lang: "both" → "zh" (show Chinese names), "en" → "en"
-        game_lang = "en" if LANG == "en" else "zh"
-        state = send({"cmd": "start_run", "character": character, "seed": actual_seed, "ascension": ascension, "lang": game_lang})
+            # Replay saved actions silently
+            if replay_actions:
+                total = len(replay_actions)
+                for i, cmd in enumerate(replay_actions):
+                    state = send(cmd, record=True)
+                    pct = (i + 1) * 100 // total
+                    print(f"\r  {t('Replaying','回放中')}... {pct}% ({i+1}/{total})", end="", flush=True)
+                    if not state:
+                        print(f"\n{c(t('Replay failed at action','回放失败于操作'), 'red')} {i+1}")
+                        return
+                print(f"\r  {c(t('Replay complete!','回放完成!'), 'green')}" + " " * 30)
+                print()
+        print(f"\n{c('Slay the Spire 2 — Headless CLI', 'bold')}")
+        if native_save_path:
+            p = state.get("player", {}) if state else {}
+            ctx = state.get("context", {}) if state else {}
+            print(f"{t('Character','角色')}: {n(p.get('name','?'))}  "
+                  f"{t('Act','幕')}: {ctx.get('act','?')} ({n(ctx.get('act_name','?'))})  "
+                  f"HP: {p.get('hp','?')}/{p.get('max_hp','?')}  "
+                  f"{t('Gold','金')}: {p.get('gold','?')}")
+        else:
+            asc_str = f"  {t('Ascension','渐进难度')}: {ascension}" if ascension > 0 else ""
+            print(f"{t('Character','角色')}: {character}  {t('Seed','种子')}: {actual_seed}{asc_str}")
+        print(f"{t('Type','输入')} {c('help', 'cyan')} {t('for available commands.','查看可用命令。')}\n")
 
         while True:
             if not state:
@@ -1088,16 +1384,44 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True):
             if dec == "game_over":
                 victory = state.get("victory", False)
                 p = state.get("player", {})
+                ctx = state.get("context", {})
+
                 print(f"\n{'═' * 60}")
                 if victory:
-                    print(f"  {c(t('VICTORY!','胜利!'), 'green')}")
+                    print(f"  {c('★ ★ ★', 'yellow')}  {c(t('VICTORY!','胜利!'), 'green')}  {c('★ ★ ★', 'yellow')}")
                 else:
-                    print(f"  {c(t('DEFEAT','战败'), 'red')} Act {state.get('act')}, {t('Floor','层')} {state.get('floor')}")
-                show_player(p)
+                    print(f"  {c(t('DEFEAT','战败'), 'red')}")
+                print()
+
+                act_name = n(ctx.get("act_name", "?"))
+                floor = state.get("floor", "?")
+                print(f"  {t('Act','幕')}: {state.get('act','?')} ({act_name})  {t('Floor','层')}: {floor}")
+                print(f"  {t('Character','角色')}: {n(p.get('name','?'))}")
+                print(f"  HP: {p.get('hp','?')}/{p.get('max_hp','?')}  {t('Gold','金')}: {p.get('gold','?')}")
+
+                deck = p.get("deck", [])
+                if deck:
+                    print(f"  {t('Deck','牌组')}: {len(deck)} {t('cards','张牌')}")
+
+                relics = p.get("relics", [])
+                if relics:
+                    relic_names = [n(r.get("name", "?")) for r in relics]
+                    print(f"  {t('Relics','遗物')} ({len(relics)}): {', '.join(relic_names)}")
+
                 print(f"{'═' * 60}")
+
+                if auto:
+                    break
+
+                print(f"\n  {c('q', 'cyan')} {t('Quit','退出')}    {c('n', 'cyan')} {t('New run','开始新一局')}")
+                choice = input(f"  > ").strip().lower()
+                if choice == "n":
+                    restart_requested = True
+                    break
                 break
 
             elif dec == "map_select":
+                _writeback_continue_save(send, native_save_path)
                 show_map(state, send_fn=send)
                 choices = state.get("choices", [])
 
@@ -1396,20 +1720,47 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True):
                 print(f"  {t('Unknown state:','未知状态:')} {dec}")
                 state = send({"cmd": "action", "action": "proceed"})
 
+    except _QuitRequested:
+        quit_sent = False
+        quit_save_path = _quit_with_save(native_save_path, character, actual_seed)
+        # Retry loop: if save fails the process stays alive so we can try a different path.
+        quit_sent = True
+        while True:
+            quit_cmd = {"cmd": "quit"}
+            if quit_save_path:
+                quit_cmd["path"] = quit_save_path
+            result = send(quit_cmd)
+            if result and result.get("type") == "save_error":
+                save_detail = result.get("save") or {}
+                msg = save_detail.get("message", "?")
+                print(f"  {c(t('Save failed:','存档失败:'), 'red')} {msg}")
+                try:
+                    ans = input(f"  {t('New path (Enter = quit without saving): ','新路径（回车则不保存退出）: ')}").strip()
+                except (EOFError, KeyboardInterrupt):
+                    ans = ""
+                quit_save_path = ans if ans else None
+            else:
+                _show_quit_save_result(result)
+                break
+    except KeyboardInterrupt:
+        print(f"\n  {c(t('Run abandoned.','已放弃本次运行。'), 'yellow')}")
     finally:
+        if not quit_sent:
+            try:
+                result = send({"cmd": "quit"})
+                _show_quit_save_result(result)
+            except Exception:
+                pass
         logger.close()
         if logger.path:
             print(f"\n  [log] {t('Game log saved to','游戏日志已保存至')} {logger.path}")
         try:
-            proc.stdin.write(json.dumps({"cmd": "quit"}) + "\n")
-            proc.stdin.flush()
-        except:
-            pass
-        try:
             proc.terminate()
             proc.wait(timeout=5)
-        except:
+        except Exception:
             proc.kill()
+
+    return restart_requested
 
 
 if __name__ == "__main__":
@@ -1423,13 +1774,77 @@ if __name__ == "__main__":
                        choices=range(0, 11), metavar="0-10",
                        help="Ascension level (0-10)")
     parser.add_argument("--lang", type=str, default="zh",
-                       choices=["en", "zh"],
-                       help="Display language: en or zh (default: zh)")
+                       choices=["en", "zh", "both"],
+                       help="Display language: en, zh, or both")
     parser.add_argument("--no-log", action="store_true",
                        help="Disable game logging")
+    parser.add_argument("--load", type=str, default=None,
+                       help="Load a save file (action replay)")
+    parser.add_argument("--saves", action="store_true",
+                       help="List available saves and exit")
+    parser.add_argument("--save-info", type=str, default=None,
+                       help="Show info from a save file (provide path)")
+    parser.add_argument("--continue", dest="continue_save", type=str, default=None,
+                       help="Continue playing from a save file (provide path)")
     args = parser.parse_args()
 
     LANG = args.lang
 
+    if args.save_info is not None:
+        p = args.save_info
+        if not os.path.isabs(p):
+            p = os.path.join(ROOT, p)
+        if not os.path.isfile(p):
+            print(f"Save file not found: {p}")
+            sys.exit(1)
+        show_native_save(p)
+        sys.exit(0)
+
+    if args.saves:
+        saves = _list_saves()
+        if saves:
+            print(f"\n{'─' * 50}")
+            for s in saves:
+                print(f"  {s['file']}  {s['character']}  seed:{s['seed']}  actions:{s['actions']}")
+            print(f"{'─' * 50}")
+            print(f"  Load: python3 play.py --load saves/<file>")
+        else:
+            print("No saves found.")
+        sys.exit(0)
+
+    load_path = None
+    if args.load:
+        p = args.load
+        if not os.path.isabs(p):
+            p = os.path.join(ROOT, p)
+        if not os.path.isfile(p):
+            print(f"Save file not found: {args.load}")
+            sys.exit(1)
+        load_path = p
+
+    native_save_path = None
+    if args.continue_save is not None:
+        native_save_path = args.continue_save
+        if not os.path.isabs(native_save_path):
+            native_save_path = os.path.join(ROOT, native_save_path)
+        if not os.path.isfile(native_save_path):
+            print(f"Save file not found: {native_save_path}")
+            sys.exit(1)
+        show_native_save(native_save_path)
+
     ensure_setup()
-    play(character=args.character, seed=args.seed, auto=args.auto, ascension=args.ascension, log=not args.no_log)
+    next_seed = args.seed
+    next_auto = args.auto
+    next_load_path = load_path
+    next_native_save_path = native_save_path
+    while True:
+        restart = play(character=args.character, seed=next_seed, auto=next_auto,
+                       ascension=args.ascension, log=not args.no_log,
+                       load_path=next_load_path,
+                       native_save_path=next_native_save_path)
+        if not restart:
+            break
+        next_seed = None
+        next_auto = False
+        next_load_path = None
+        next_native_save_path = None

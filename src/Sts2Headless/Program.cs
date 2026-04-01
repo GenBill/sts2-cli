@@ -75,7 +75,14 @@ class Program
             }
 
             if (result != null)
+            {
                 WriteLine(result);
+                if (result.TryGetValue("type", out var resultTypeObj) &&
+                    string.Equals(resultTypeObj as string, "quit_result", StringComparison.Ordinal))
+                {
+                    break;
+                }
+            }
         }
     }
 
@@ -114,6 +121,20 @@ class Program
                 return sim.ExecuteAction(action, actionArgs);
             }
 
+            case "load_save":
+            {
+                var savePath = cmd.TryGetProperty("path", out var sp) ? sp.GetString() : null;
+                var saveJson = cmd.TryGetProperty("json", out var sj) ? sj.GetString() : null;
+                if (saveJson == null && savePath != null)
+                {
+                    if (!File.Exists(savePath))
+                        return new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"Save file not found: {savePath}" };
+                    saveJson = File.ReadAllText(savePath);
+                }
+                if (saveJson == null)
+                    return new Dictionary<string, object?> { ["type"] = "error", ["message"] = "Provide 'path' or 'json' for load_save" };
+                return sim.LoadSave(saveJson);
+            }
             case "get_map":
                 return sim.GetFullMap();
 
@@ -142,9 +163,44 @@ class Program
                 return sim.SetDrawOrder(cards);
             }
 
+            case "write_continue_save":
+            {
+                var outputPath = cmd.TryGetProperty("path", out var op) ? op.GetString() : null;
+                return sim.SaveCheckpoint(outputPath);
+            }
+
             case "quit":
+            {
+                var outputPath = cmd.TryGetProperty("path", out var op) ? op.GetString() : null;
+                if (!string.IsNullOrEmpty(outputPath))
+                {
+                    var saveResult = sim.SaveCheckpoint(outputPath);
+                    bool saveOk = saveResult.TryGetValue("success", out var sObj) && sObj is bool b && b;
+                    if (!saveOk)
+                    {
+                        // Save failed — do NOT clean up so the caller can retry with a different path.
+                        return new Dictionary<string, object?>
+                        {
+                            ["type"] = "save_error",
+                            ["save"] = saveResult,
+                        };
+                    }
+                    sim.CleanUp();
+                    return new Dictionary<string, object?>
+                    {
+                        ["type"] = "quit_result",
+                        ["success"] = true,
+                        ["save"] = saveResult,
+                    };
+                }
                 sim.CleanUp();
-                return null;
+                return new Dictionary<string, object?>
+                {
+                    ["type"] = "quit_result",
+                    ["success"] = true,
+                    ["save"] = null,
+                };
+            }
 
             default:
                 return new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"Unknown command: {cmdType}" };

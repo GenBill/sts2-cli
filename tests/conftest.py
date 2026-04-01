@@ -2,10 +2,13 @@
 
 import json
 import os
+import shutil
 import subprocess
 import pytest
 
 DOTNET = os.path.expanduser("~/.dotnet-arm64/dotnet")
+if not os.path.isfile(DOTNET):
+    DOTNET = shutil.which("dotnet") or DOTNET
 PROJECT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "src", "Sts2Headless", "Sts2Headless.csproj")
 
